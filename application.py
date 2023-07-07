@@ -16,15 +16,18 @@ import signal
 import json
 import random
 import csv
+import uuid
 from types import SimpleNamespace
 
 from hypercorn.config import Config  # pylint: disable=import-error
 from hypercorn.asyncio import serve as hypercorn_serve  # pylint: disable=import-error
 
 from flask_sqlalchemy import SQLAlchemy  # pylint: disable=import-error
+
 from flask import Flask, Markup, render_template  # pylint: disable=import-error
 from flask.views import View  # pylint: disable=import-error
 from flask_admin import AdminIndexView, Admin  # pylint: disable=import-error
+from flask_admin.contrib.sqla import ModelView  # pylint: disable=import-error
 
 import websockets  # pylint: disable=import-error
 
@@ -95,15 +98,84 @@ def init_views(flask_app):
 
         def dispatch_request(self):
 
+            logging.info(f"pid:{os.getpid()}")
             return render_template(self.template, **self.context)
 
-    admin = Admin(flask_app, index_view=AdminIndexView())
+
+    # ~ admin = Admin(flask_app, index_view=AdminIndexView())
     # ~ admin.add_view(CatalogView(Catalog, app.flask_app.db.session))
+
+    admin = Admin(flask_app, index_view=AdminIndexView())
+    admin.add_view(CatalogView(Catalog, flask_app.db.session))
 
     flask_app.add_url_rule("/", view_func=FileTransfer.as_view("/index"))
 
     return admin
 
+
+def generate_id():
+
+    return str(uuid.uuid4())
+
+class Catalog(db__.Model):
+
+    __tablename__ = 'catalog'
+
+    db = db__
+
+    Id = db.Column(db.Unicode, primary_key=True, nullable=False, default=generate_id)
+    Name = db.Column(db.Unicode, nullable=False)
+    Price = db.Column(db.Unicode, nullable=False)
+
+    # ~ properties = db.Column(db.Unicode, default='{}')
+
+    @classmethod
+    def store_csv_row(cls, row, db_session, do_commit=False):
+
+        new_cntr = 0
+        mod_cntr = 0
+        err_cntr = 0
+        try:
+            old_c = None
+            if row.get('Id') is not None:
+                old_Id = row.pop('Id')
+                q = db_session.query(cls)  # pylint: disable=no-member
+                old_c = q.filter_by(Id=old_Id).first()
+            if old_c:
+                for k, v in row.items():
+                    setattr(old_c, k, v)
+                # ~ old_c.update(row)
+                if do_commit:
+                    db_session.commit()  # pylint: disable=no-member
+
+                mod_cntr += 1
+            else:
+                c = cls(**row)
+                db_session.add(c)  # pylint: disable=no-member
+                if do_commit:
+                    db_session.commit()  # pylint: disable=no-member
+
+                new_cntr += 1
+
+        except Exception as e:
+            err_cntr += 1
+            if do_commit:
+                db_session.rollback()  # pylint: disable=no-member
+            logging.error(f"{e}")
+
+        return new_cntr, mod_cntr, err_cntr
+
+
+
+class CatalogView(ModelView):
+
+    can_view_details = True
+    can_export = True
+    export_max_rows = 10 * 1000
+    export_types = ['csv', ]
+
+    # ~ column_exclude_list = ('id', )
+    column_list = ('id', 'Name', 'Price')
 
 class WSinstance:
 
@@ -124,9 +196,9 @@ class WSinstance:
             chunk_cntr=0)
 
 
-    async def dump_from_csv_file_to_db(self):  # pylint: disable=too-many-locals
+    async def __dump_from_csv_file_to_db(self):  # pylint: disable=too-many-locals
 
-        asyncio.sleep(.0001)
+        await asyncio.sleep(.0001)
 
         t0 = time.time()
         new_cntr = 0
@@ -141,37 +213,21 @@ class WSinstance:
                 db_session = self.parent.appplication.flask_app.db.session
 
                 for row in csv_reader:
-                    try:
-                        old_ID = row.pop('ID')
-                        q = db_session.query(Catalog)  # pylint: disable=no-member
-                        old_c = q.filter_by(ID=old_ID).first()
-                        if old_c:
-                            for k, v in row.items():
-                                setattr(old_c, k, v)
-                            # ~ old_c.update(row)
-                            db_session.commit()  # pylint: disable=no-member
-                            mod_cntr += 1
-                        else:
-                            c = Catalog(**row)
-                            db_session.add(c)  # pylint: disable=no-member
-                            db_session.commit()  # pylint: disable=no-member
-                            new_cntr += 1
 
-                    except Exception as e:
-                        err_cntr += 1
-                        db_session.rollback()  # pylint: disable=no-member
-                        logging.error(f"{e}")
+                    new_cntr_, mod_cntr_, err_cntr_ = Catalog.store_csv_row(row, db_session, do_commit=True)
 
+                    new_cntr += new_cntr_
+                    mod_cntr += mod_cntr_
+                    err_cntr += err_cntr_
                     row_cntr += 1
 
                     dt = time.time() - t0
                     if row_cntr % 10 == 0:
-                        pld_ = f"{new_cntr} new and {mod_cntr} modified records, {err_cntr} errors. <br/>dt:{dt} ..."
+                        pld_ = f"{self.status}<br/>"
+                        pld_ = f"{new_cntr} new and {mod_cntr} modified records, {err_cntr} errors. <br/>dt:{round(dt, 1)}  (s)..."
                         msg_ = {'type': 'record_loaded_ack', 'payload': Markup(pld_), 'target': 'db_dump_msg'}
                         await self.send_message(msg_)
                         logging.debug(msg_)
-
-        logging.info(f"f_pth:{f_pth}, {new_cntr} new and {mod_cntr} modified records, dt:{dt}")
 
         return new_cntr, mod_cntr, err_cntr, row_cntr
 
@@ -197,8 +253,16 @@ class WSinstance:
             answer = await self.UPLOAD_CHUNK(payload)
         elif type_ == "file_uploaded":
             answer = await self.FILE_UPLOADED(payload)
+        elif type_ == "stop":
+            answer = await self.STOP(payload)
 
         await self.send_message(answer)
+
+    async def STOP(self, payload: dict) -> dict:
+
+        self.status = 'IDLE'
+        answer = {}
+        return answer
 
     async def START_FILE_UPLOAD(self, payload: dict) -> dict:
 
@@ -247,17 +311,24 @@ class WSinstance:
             msg_ = Markup(f"ERR: {self.status} not allowed.")
 
         answer = {"type": "upload_chunk_ack", "payload": msg_, 'target': 'xfer_file_msg'}
-
         return answer
 
     async def FILE_UPLOADED(self, payload: dict) -> dict:
 
         if self.status in ('FILE_UPLOAD', ):
 
-            new_cntr, mod_cntr, err_cntr, row_cntr = await self.dump_from_csv_file_to_db()
+            self.status = 'DUMP_FILE_TO_DB'
+
+            t0 = time.time()
+            new_cntr, mod_cntr, err_cntr, row_cntr = await self.__dump_from_csv_file_to_db()
 
             msg_ = f"new_cntr:{new_cntr}, mod_cntr:{mod_cntr}, err_cntr:{err_cntr}, row_cntr:{row_cntr}"
+            msg_ += f"<br/>dt:{round(time.time() - t0, 1)} (s)"
             msg_ = Markup(msg_)
+
+            logging.info(msg_)
+
+            self.status = 'IDLE'
 
         else:
 
@@ -280,7 +351,7 @@ class WSserver:
 
     async def new_client_handler(self, websocket, path):
         try:
-            logging.info("appending instance. websocket:{}, path:{}.".format(websocket, path))
+            logging.info(f"appending instance. websocket:{websocket}, path:{path}, pid:{os.getpid()}.")
 
             ws_instance = WSinstance(websocket, path, parent=self)
             self.ws_instances[websocket] = ws_instance
