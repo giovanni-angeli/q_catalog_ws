@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Example</title>
+
+	<style>
+		.button {
+			width:280px;
+			height:32px;
+			font-size:22px;
+			margin: 2px;
+		}
+		.server_msg_container {
+			width: 600px;
+			height: 80px;
+			background-color: #AAAAAA;
+			margin: 6px;
+			text-align: center;
+			border: 0.5px solid green;
+			border-radius: 8px;
+			padding: 10px;
+		}
+	</style>
+
+</head>
+<body>
+    <h1>WebSocket Example</h1>
+    <button class="button" onclick="send_message({'type':'txt', 'payload':'Hello, server!'})">Send Message</button>
+	<div class="server_msg_container" id="generic_msg" style="height:32px;"></div>
+	<hr></hr>
+	<div name="File Transfer">
+		<h1>File Transfer</h1>
+		<table>
+			<tr><td>csv encoding: 		</td><td>{{csv_encoding}}		</td></tr>
+			<tr><td>csv delimiter:		</td><td>{{csv_delimiter}}      </td></tr>
+			<tr><td>csv quotechar:		</td><td>{{csv_quotechar}}      </td></tr>
+			<tr><td>chunk size in bytes:</td><td>{{chunk_size_bytes}}   </td></tr>
+			<tr><td>ws url:				</td><td>{{ws_url}}      		</td></tr>
+			<tr>
+				<td colspan="2">
+					<input style="width:420px;height:40px;"
+						class="button" 
+						type="file" 
+						id="file_input" 
+						name="file_input" 
+						id="file_input"></input>
+				</td>
+			<tr>
+			</tr>
+				<td colspan="2">
+					<button class="button" onclick="upload_file_clicked();" id="upload_button">Upload</button>
+				</td>
+			</tr>
+		</table>
+
+		<div class="server_msg_container" id="xfer_file_msg"></div>
+		<div class="server_msg_container" id="db_dump_msg"></div>
+		<button class="button" onclick="stop_button_clicked();" id="stop_button">Stop</button>
+		<button class="button" onclick="pause_button_clicked();" id="pause_button">Pause/Unpause</button>
+	</div>
+	<hr></hr>
+
+	<a href="/admin/catalog">see catalog</a>
+
+</body>
+
+<script>
+	const wsocket = new WebSocket('{{ws_url}}');
+
+	document.getElementById('upload_button').disabled = false;
+	document.getElementById('file_input').disabled = false;
+	document.getElementById('stop_button').disabled = true;
+	document.getElementById('pause_button').disabled = true;
+
+	const chunk_size_bytes = {{chunk_size_bytes}};
+	var g_file_to_read;
+	var g_file_reader;
+	var g_file_reader_offset;
+
+	var handle_file_uploaded_ack = function(arg) {
+		g_file_reader = null;
+		g_file_reader_offset = 0xFFFFFFFF;
+
+		document.getElementById('upload_button').disabled = false;
+		document.getElementById('file_input').disabled = false;
+		document.getElementById('stop_button').disabled = true;
+		document.getElementById('pause_button').disabled = true;
+	}
+
+	var handle_record_loaded_ack = function(arg) {
+	}
+
+	var handle_upload_chunk_ack = function(arg) {
+		console.log('g_file_reader:', g_file_reader);
+		console.log('g_file_reader_offset:', g_file_reader_offset);
+		console.log('g_file_to_read.size:', g_file_to_read.size);
+		if (g_file_reader) {
+			if (g_file_reader_offset < g_file_to_read.size) {
+				console.log('g_file_reader_offset:', g_file_reader_offset);
+				__read_send_chunk();
+			} else {
+				var payload = {'file_name': g_file_to_read.name};
+				send_message({'type': 'file_uploaded', 'payload': payload});
+			}
+		}
+	}
+
+	var handle_start_file_upload_ack = function(arg) {
+		g_file_reader = new FileReader();
+		g_file_reader_offset = 0;
+		__read_send_chunk();
+	}
+
+	var on_ws_error = function(event) {
+		alert('WebSocket error' + JSON.stringify(event));
+		console.log('WebSocket error');
+	}
+
+	var on_ws_close = function(event) {
+//~ 		alert('WebSocket connection closed');
+		console.log('WebSocket connection closed');
+	}
+
+	var on_ws_open = function(event) {
+//~ 		alert('WebSocket connection established');
+		console.log('WebSocket connection established');
+	}
+
+	var on_ws_message = function(event) {
+
+		try {
+			console.log('Received message:', event.data);
+			const pack = JSON.parse(event.data);
+			var targetElement = document.getElementById('xfer_file_msg');
+			if (pack.target) targetElement = document.getElementById(pack.target);
+			targetElement.innerHTML = pack.type + '<br/>' + pack.payload;
+
+			if (pack.payload.startsWith('OK')) {
+				targetElement.style.backgroundColor = "#66FF66"
+			}else if (pack.payload.startsWith('NOK')) { 
+				targetElement.style.backgroundColor = "#FF6666"
+			} else { 
+				targetElement.style.backgroundColor = "#FFFF66" 
+			}
+
+			switch(pack.type) {
+				case "generic_ack":
+//~ 					alert('on_ws_message() generic_ack.');
+					break;
+				case "file_uploaded_ack":
+					handle_file_uploaded_ack(pack.payload);
+					break;
+				case "record_loaded_ack":
+					handle_record_loaded_ack(pack.payload);
+					break;
+				case "upload_chunk_ack":
+					handle_upload_chunk_ack(pack.payload);
+					break;
+				case "start_file_upload_ack":
+					handle_start_file_upload_ack(pack.payload);
+					break;
+				case "error":
+					alert('error from server:' + pack.payload);
+					break;
+				default:
+					alert('on_ws_message() unknown pack.type:' + pack.type);
+			} 
+		} catch (error) {
+			console.error(error);
+			alert('on_ws_message() format error:' + error);
+		}
+	}
+
+	wsocket.addEventListener('open', on_ws_open);
+	wsocket.addEventListener('message', on_ws_message);
+	wsocket.addEventListener('close', on_ws_close);
+	wsocket.addEventListener('error', on_ws_error);
+
+	var send_message = function(message) {
+		wsocket.send(JSON.stringify(message));
+		console.log('Sent message:', message);
+	}
+
+	function __read_send_chunk() {
+		const chunk = g_file_to_read.slice(g_file_reader_offset, g_file_reader_offset + chunk_size_bytes);
+		g_file_reader_offset += chunk_size_bytes;
+		return new Promise(
+			(resolve, reject) => {
+				g_file_reader.onload = function(e) 
+				{
+					var chunk = g_file_reader.result;
+					var payload = {'chunk': chunk, 'file_name': g_file_to_read.name};
+					send_message({'type': 'upload_chunk', 'payload': payload});
+				};
+				g_file_reader.onerror = function(e) 
+				{
+					reject(e.target.error);
+				};
+				g_file_reader.readAsText(chunk);
+			}
+		);
+	}
+
+	function upload_file_clicked() {
+
+		document.getElementById('upload_button').disabled = true;
+		document.getElementById('file_input').disabled = true;
+		document.getElementById('stop_button').disabled = false;
+		document.getElementById('pause_button').disabled = false;
+
+		const file_input = document.getElementById('file_input');
+		g_file_to_read = file_input.files[0];
+		var payload = {'file_size': g_file_to_read.size, 'file_name': g_file_to_read.name};
+		send_message({'type': 'start_file_upload', 'payload': payload});
+	}
+
+
+	function stop_button_clicked() {
+		send_message({'type': 'abort', 'payload': ''});
+		location.reload();
+	}
+
+	function pause_button_clicked() {
+		send_message({'type': 'pause', 'payload': ''});
+	}
+
+
+</script>
+
+</html>
