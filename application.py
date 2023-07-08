@@ -169,7 +169,7 @@ class CatalogView(ModelView):
 
     can_view_details = True
     can_export = True
-    export_max_rows = 50 * 1000
+    export_max_rows = 10 * 1000
     export_types = ['csv', ]
 
     column_list = ('id', 'Name', 'Price')
@@ -230,7 +230,7 @@ class WSinstance:
                     row_cntr += 1
 
                     dt = time.time() - t0
-                    if row_cntr % 100 == 0:
+                    if row_cntr % 50 == 0:
                         pld_ = f"{self.status}<br/>"
                         pld_ = f"{new_cntr} new and {mod_cntr} modified records, {err_cntr} errors. <br/>dt:{round(dt, 1)}  (s)..."
                         msg_ = {'type': 'record_stored_ack', 'payload': Markup(pld_), 'target': 'db_dump_msg'}
@@ -248,27 +248,31 @@ class WSinstance:
 
     async def handle_message(self, message: dict) -> None:
 
-        logging.info(f"self.status:{self.status}, message:{message}."[:300])
+        logging.debug(f"self.status:{self.status}, message:{message}."[:200] + '...')
 
-        type_ = message.get('type')
-        payload = message.get('payload')
+        try:
+            type_ = message.get('type')
+            payload = message.get('payload')
 
-        if type_ == "txt":
-            pld = f"{random.choice(('OK', 'NOK', '-'))} [{time.asctime()}]"
-            answer = {"type": "generic_ack", "payload": Markup(pld), 'target': 'generic_msg'}
+            if type_ == "txt":
+                pld = f"{random.choice(('OK', 'NOK', '-'))} [{time.asctime()}]"
+                answer = {"type": "generic_ack", "payload": Markup(pld), 'target': 'generic_msg'}
 
-        elif type_ == "start_file_upload":
-            answer = await self.START_FILE_UPLOAD(payload)
-        elif type_ == "upload_chunk":
-            answer = await self.UPLOAD_CHUNK(payload)
-        elif type_ == "file_uploaded":
-            answer = await self.FILE_UPLOADED(payload)
-        elif type_ == "pause":
-            answer = await self.PAUSE(payload)
-        elif type_ == "stop":
-            answer = await self.STOP(payload)
+            elif type_ == "start_file_upload":
+                answer = await self.START_FILE_UPLOAD(payload)
+            elif type_ == "upload_chunk":
+                answer = await self.UPLOAD_CHUNK(payload)
+            elif type_ == "file_uploaded":
+                answer = await self.FILE_UPLOADED(payload)
+            elif type_ == "pause":
+                answer = await self.PAUSE(payload)
+            elif type_ == "stop":
+                answer = await self.STOP(payload)
 
-        await self.send_message(answer)
+            await self.send_message(answer)
+
+        except websockets.exceptions.ConnectionClosedOK as e:
+            logging.info(f"{e}")
 
     async def PAUSE(self, payload: dict) -> dict:  # pylint: disable=unused-argument
 
