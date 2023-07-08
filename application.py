@@ -17,10 +17,12 @@ import json
 import random
 import csv
 import uuid
+# ~ import concurrent.futures
+
 from types import SimpleNamespace
 
-from hypercorn.config import Config  # pylint: disable=import-error
-from hypercorn.asyncio import serve as hypercorn_serve  # pylint: disable=import-error
+import hypercorn.config  # pylint: disable=import-error
+import hypercorn.asyncio  # pylint: disable=import-error
 
 from flask_sqlalchemy import SQLAlchemy  # pylint: disable=import-error
 
@@ -42,7 +44,7 @@ DATA_PATH = os.path.join(here, "data")
 DB_FILENAME = "catalog.02.sqlite"
 
 SECRET_KEY = os.environ.get('Q_CATALOG_SECRET_KEY', 'development key')
-LOG_LEVEL = os.environ.get('Q_CATALOG_LOG_LEVEL', 'DEBUG')
+LOG_LEVEL = os.environ.get('Q_CATALOG_LOG_LEVEL', 'WARNING')
 
 CHUNK_SIZE_BYTES = 128 * 1024
 CSV_ENCODING = "utf-8"
@@ -186,6 +188,7 @@ class WSinstance:
         self.parent = parent
 
         self.status = 'IDLE'
+        self.pre_paused_status = self.status
         self.background_tasks = set()
 
         self.file = SimpleNamespace(
@@ -195,10 +198,12 @@ class WSinstance:
             line_cntr=0,
             chunk_cntr=0)
 
+    async def __pause(self):
+
+        while self.status in ('PAUSE'):
+            await asyncio.sleep(.1)
 
     async def __dump_from_csv_file_to_db(self):  # pylint: disable=too-many-locals
-
-        await asyncio.sleep(.0001)
 
         t0 = time.time()
         new_cntr = 0
@@ -214,6 +219,13 @@ class WSinstance:
 
                 for row in csv_reader:
 
+                    await asyncio.sleep(.0001) # let the context switch
+
+                    if self.status in ('PAUSE'):
+                        await self.__pause()
+                    elif self.status in ('STOP'):
+                        break
+
                     new_cntr_, mod_cntr_, err_cntr_ = Catalog.store_csv_row(row, db_session, do_commit=True)
 
                     new_cntr += new_cntr_
@@ -222,14 +234,16 @@ class WSinstance:
                     row_cntr += 1
 
                     dt = time.time() - t0
-                    if row_cntr % 10 == 0:
+                    if row_cntr % 100 == 0:
                         pld_ = f"{self.status}<br/>"
                         pld_ = f"{new_cntr} new and {mod_cntr} modified records, {err_cntr} errors. <br/>dt:{round(dt, 1)}  (s)..."
-                        msg_ = {'type': 'record_loaded_ack', 'payload': Markup(pld_), 'target': 'db_dump_msg'}
+                        msg_ = {'type': 'record_stored_ack', 'payload': Markup(pld_), 'target': 'db_dump_msg'}
+
                         await self.send_message(msg_)
+
                         logging.debug(msg_)
 
-        return new_cntr, mod_cntr, err_cntr, row_cntr
+        return (new_cntr, mod_cntr, err_cntr, row_cntr)
 
     async def send_message(self, message: dict) -> None:
 
@@ -253,15 +267,28 @@ class WSinstance:
             answer = await self.UPLOAD_CHUNK(payload)
         elif type_ == "file_uploaded":
             answer = await self.FILE_UPLOADED(payload)
+        elif type_ == "pause":
+            answer = await self.PAUSE(payload)
         elif type_ == "stop":
             answer = await self.STOP(payload)
 
         await self.send_message(answer)
 
-    async def STOP(self, payload: dict) -> dict:
+    async def PAUSE(self, payload: dict) -> dict:  # pylint: disable=unused-argument
+
+        if self.status in ('PAUSE'):
+            self.status = self.pre_paused_status
+        else:
+            self.pre_paused_status = self.status
+            self.status = 'PAUSE'
+
+        answer = {"type": "generic_ack", "payload": f"OK status:{self.status}", 'target': 'generic_msg'}
+        return answer
+
+    async def STOP(self, payload: dict) -> dict:  # pylint: disable=unused-argument
 
         self.status = 'IDLE'
-        answer = {}
+        answer = {"type": "generic_ack", "payload": 'OK', 'target': 'generic_msg'}
         return answer
 
     async def START_FILE_UPLOAD(self, payload: dict) -> dict:
@@ -275,7 +302,7 @@ class WSinstance:
             self.file.chunk_cntr = 0
 
             f_pth = os.path.join(DATA_PATH, self.file.file_name)
-            with open(f_pth, 'w', encoding=CSV_ENCODING) as f:
+            with open(f_pth, 'w', encoding=CSV_ENCODING):
                 pass
             msg_ = Markup(f"{payload}")
         else:
@@ -313,17 +340,18 @@ class WSinstance:
         answer = {"type": "upload_chunk_ack", "payload": msg_, 'target': 'xfer_file_msg'}
         return answer
 
-    async def FILE_UPLOADED(self, payload: dict) -> dict:
+    async def FILE_UPLOADED(self, payload: dict) -> dict:  # pylint: disable=unused-argument
 
         if self.status in ('FILE_UPLOAD', ):
 
             self.status = 'DUMP_FILE_TO_DB'
 
             t0 = time.time()
-            new_cntr, mod_cntr, err_cntr, row_cntr = await self.__dump_from_csv_file_to_db()
+            result = await self.__dump_from_csv_file_to_db()
+            new_cntr, mod_cntr, err_cntr, row_cntr = result
 
             msg_ = f"new_cntr:{new_cntr}, mod_cntr:{mod_cntr}, err_cntr:{err_cntr}, row_cntr:{row_cntr}"
-            msg_ += f"<br/>dt:{round(time.time() - t0, 1)} (s)"
+            msg_ += f"<br/>file stored. dt:{round(time.time() - t0, 1)} (s)"
             msg_ = Markup(msg_)
 
             logging.info(msg_)
@@ -428,7 +456,7 @@ class Application:
 
     def run_until_complete(self):
 
-        hypercorn_config = Config()
+        hypercorn_config = hypercorn.config.Config()
         hypercorn_config.bind = f"{self.host}:{self.port}"
         hypercorn_config.loglevel = LOG_LEVEL
 
@@ -439,7 +467,7 @@ class Application:
         asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, _signal_handler)
         asyncio.get_event_loop().add_signal_handler(signal.SIGINT, _signal_handler)
 
-        coro = hypercorn_serve(self.flask_app, hypercorn_config, shutdown_trigger=shutdown_event.wait)
+        coro = hypercorn.asyncio.serve(self.flask_app, hypercorn_config, shutdown_trigger=shutdown_event.wait)
         asyncio.get_event_loop().run_until_complete(coro)
 
         logging.warning("exiting... ")

@@ -87,7 +87,7 @@
 		document.getElementById('pause_button').disabled = true;
 	}
 
-	var handle_record_loaded_ack = function(arg) {
+	var handle_record_stored_ack = function(arg) {
 	}
 
 	var handle_upload_chunk_ack = function(arg) {
@@ -150,8 +150,8 @@
 				case "file_uploaded_ack":
 					handle_file_uploaded_ack(pack.payload);
 					break;
-				case "record_loaded_ack":
-					handle_record_loaded_ack(pack.payload);
+				case "record_stored_ack":
+					handle_record_stored_ack(pack.payload);
 					break;
 				case "upload_chunk_ack":
 					handle_upload_chunk_ack(pack.payload);
