@@ -1,5 +1,5 @@
 # q_catalog
-Simple demo web app using python, asyncio, flask, flask-admin, websockets, hypercorn all together .
+Simple demo web app using python, asyncio, sqlalchemy, flask, flask-admin, websockets, hypercorn all together .
 
 this is not packed up as a python wheel, so:
 
