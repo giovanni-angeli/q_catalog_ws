@@ -17,7 +17,6 @@ import json
 import random
 import csv
 import uuid
-# ~ import concurrent.futures
 
 from types import SimpleNamespace
 
@@ -53,6 +52,7 @@ CSV_QUOTECHAR = '"'
 CSV_ENDLINE = '\n'
 
 db__ = SQLAlchemy()
+
 
 def set_logging(log_level):
     fmt_ = logging.Formatter('[%(asctime)s]'
@@ -103,10 +103,6 @@ def init_views(flask_app):
             logging.info(f"pid:{os.getpid()}")
             return render_template(self.template, **self.context)
 
-
-    # ~ admin = Admin(flask_app, index_view=AdminIndexView())
-    # ~ admin.add_view(CatalogView(Catalog, app.flask_app.db.session))
-
     admin = Admin(flask_app, index_view=AdminIndexView())
     admin.add_view(CatalogView(Catalog, flask_app.db.session))
 
@@ -118,6 +114,7 @@ def init_views(flask_app):
 def generate_id():
 
     return str(uuid.uuid4())
+
 
 class Catalog(db__.Model):
 
@@ -168,16 +165,15 @@ class Catalog(db__.Model):
         return new_cntr, mod_cntr, err_cntr
 
 
-
 class CatalogView(ModelView):
 
     can_view_details = True
     can_export = True
-    export_max_rows = 10 * 1000
+    export_max_rows = 50 * 1000
     export_types = ['csv', ]
 
-    # ~ column_exclude_list = ('id', )
     column_list = ('id', 'Name', 'Price')
+
 
 class WSinstance:
 
@@ -219,7 +215,7 @@ class WSinstance:
 
                 for row in csv_reader:
 
-                    await asyncio.sleep(.0001) # let the context switch
+                    await asyncio.sleep(.0001)  # let the context switch
 
                     if self.status in ('PAUSE'):
                         await self.__pause()
@@ -317,8 +313,8 @@ class WSinstance:
         if self.status in ('FILE_UPLOAD', ):
 
             chunk_ = payload.get('chunk', '')
-            self.file.byte_cntr  += len(chunk_)
-            self.file.line_cntr  += chunk_.count(CSV_ENDLINE)
+            self.file.byte_cntr += len(chunk_)
+            self.file.line_cntr += chunk_.count(CSV_ENDLINE)
             self.file.chunk_cntr += 1
 
             if chunk_:
@@ -331,7 +327,7 @@ class WSinstance:
             msg_ += f"{self.file.line_cntr } lines, "
             msg_ += f"{self.file.chunk_cntr} chunks transferred."
             if self.file.byte_cntr >= self.file.file_size:
-                msg_ = 'OK ' + msg_+ " FILE_UPLOADED."
+                msg_ = 'OK ' + msg_ + " FILE_UPLOADED."
 
             msg_ = Markup(msg_)
         else:
